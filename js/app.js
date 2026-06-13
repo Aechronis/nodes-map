@@ -129,6 +129,11 @@ function escapeHtml(s) {
 
 // --- Data indexing -------------------------------------------------------
 function buildIndex({ towns, world, war }) {
+  // Any of these may be null when the corresponding node file is absent;
+  // default to empty objects so the index just comes out empty (no owned
+  // chunks) instead of throwing on `.nations` / `.territories` access.
+  towns = towns || {};
+  world = world || {};
   const townNation = new Map();
   for (const [nationName, nation] of Object.entries(towns.nations || {})) {
     for (const tn of nation.towns || []) townNation.set(tn, nationName);
@@ -217,6 +222,10 @@ function buildIndex({ towns, world, war }) {
 // `skipKeys` (packed-coord Set) are chunks left transparent so the attack
 // fill blends straight onto the map imagery — no old-owner colour tinting it.
 function buildWorldImage(index, skipKeys) {
+  // No owned chunks (e.g. towns/world data absent) → minCx/minCz are still
+  // Infinity, which would size the canvas from garbage bounds. Nothing to
+  // raster, so return null; territoryRasterLayer() skips a null image.
+  if (!index.owner.size) return null;
   const w = index.maxCx - index.minCx + 1;
   const h = index.maxCz - index.minCz + 1;
   const { buf, commit } = chunkCanvas(w, h);
@@ -412,8 +421,11 @@ async function fetchJsonWithMeta(url, optional) {
 }
 
 Promise.all([
-  fetchJsonWithMeta('nodes/towns.json'),
-  fetchJsonWithMeta('nodes/world.json'),
+  // All node files are optional: when none are present the base map (tiles)
+  // still renders, just with no town/territory overlay. A missing towns.json
+  // or world.json yields an empty index rather than blocking the map load.
+  fetchJsonWithMeta('nodes/towns.json', true),
+  fetchJsonWithMeta('nodes/world.json', true),
   // war.json may be absent when there's no active war; treat any failure as
   // "no war data" rather than blocking the whole map load.
   fetchJsonWithMeta('nodes/war.json', true),
@@ -480,7 +492,7 @@ function bootMap(initial) {
 
     // Resident UUID → name; callers fall back to the raw UUID when absent.
     residentNames = new Map();
-    for (const [uuid, r] of Object.entries(data.towns.residents || {})) {
+    for (const [uuid, r] of Object.entries(data.towns?.residents || {})) {
       if (r && r.name) residentNames.set(uuid, r.name);
     }
 
@@ -934,6 +946,7 @@ function bootMap(initial) {
   }
 
   function territoryRasterLayer() {
+    if (!worldImage) return null;
     if (cachedTerritoryRasterLayer) return cachedTerritoryRasterLayer;
     cachedTerritoryRasterLayer = new BitmapLayer({
       id: 'territory-raster',
