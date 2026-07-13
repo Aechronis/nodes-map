@@ -1,12 +1,12 @@
 {
-  "short_name": "",
-  "name": "",
+  "short_name": "Nodes Map",
+  "name": "Nodes Map",
   "icons": [{
     "src": "logo.png",
     "type": "image/png",
     "sizes": "400x400"
   }],
-  "start_url": "/?utm_source=homescreen",
-  "background_color": "#fafafa",
-  "theme_color": "#fafafa"
+  "start_url": "./",
+  "background_color": "#111111",
+  "theme_color": "#111111"
 }
