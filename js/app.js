@@ -400,13 +400,10 @@ function listHtml(items) {
 // refresher can issue conditional GETs (If-None-Match / If-Modified-Since)
 // — the server then answers 304 for unchanged files, avoiding repeated
 // downloads of the 5+ MiB towns.json.
-async function fetchJsonWithMeta(url, optional) {
+async function fetchOptionalJsonWithMeta(url) {
   try {
     const r = await fetch(url);
-    if (!r.ok) {
-      if (optional) return { body: null, meta: null };
-      throw new Error(`${url} → HTTP ${r.status}`);
-    }
+    if (!r.ok) return { body: null, meta: null };
     return {
       body: await r.json(),
       meta: {
@@ -414,9 +411,8 @@ async function fetchJsonWithMeta(url, optional) {
         lastMod: r.headers.get('Last-Modified'),
       },
     };
-  } catch (err) {
-    if (optional) return { body: null, meta: null };
-    throw err;
+  } catch {
+    return { body: null, meta: null };
   }
 }
 
@@ -424,12 +420,12 @@ Promise.all([
   // All node files are optional: when none are present the base map (tiles)
   // still renders, just with no town/territory overlay. A missing towns.json
   // or world.json yields an empty index rather than blocking the map load.
-  fetchJsonWithMeta('nodes/towns.json', true),
-  fetchJsonWithMeta('nodes/world.json', true),
+  fetchOptionalJsonWithMeta('nodes/towns.json'),
+  fetchOptionalJsonWithMeta('nodes/world.json'),
   // war.json may be absent when there's no active war; treat any failure as
   // "no war data" rather than blocking the whole map load.
-  fetchJsonWithMeta('nodes/war.json', true),
-  fetchJsonWithMeta('nodes/buildings.json', true),
+  fetchOptionalJsonWithMeta('nodes/war.json'),
+  fetchOptionalJsonWithMeta('nodes/buildings.json'),
 ]).then(([towns, world, war, buildings]) => {
   bootMap({
     data: { towns: towns.body, world: world.body, war: war.body, buildings: buildings.body },
