@@ -10,7 +10,7 @@ module.exports = merge(common, {
       patterns: [
         { from: 'css', to: 'css' },
         { from: 'nodes', to: 'nodes' },
-        { from: 'tiles', to: 'tiles' },
+        { from: 'tiles', to: 'tiles', noErrorOnMissing: true },
         { from: 'img', to: 'img' },
         { from: 'robots.txt', to: 'robots.txt' },
         { from: 'logo.png', to: 'logo.png' },
