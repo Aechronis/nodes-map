@@ -574,6 +574,7 @@ function bootMap(initial) {
     for (const { x, y, img } of results) {
       if (!img) continue;
       ctx.drawImage(img, (x - minTX) * tilePx, (y - minTY) * tilePx);
+      img.close();
     }
     fallbackCanvas = canvas;
     // BitmapLayer bounds [left, bottom, right, top] in world (block) coords.
