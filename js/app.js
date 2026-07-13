@@ -1422,10 +1422,10 @@ function bootMap(initial) {
     }
   }
 
-  // Cheap, index-reusing re-eval of which attacks are currently within their
-  // [s, e] window. Attacks start/expire on wall-clock time, so the active set
-  // can change even when no file did. Returns true if the set changed (caller
-  // then invalidates the layer cache + redraws).
+  // Cheap, index-reusing re-eval of which attacks have reached their start
+  // time. The visible set can change even when no file did; completed attacks
+  // remain visible until war.json removes them. Returns true if the set changed
+  // (the caller then invalidates the layer cache and redraws).
   // Membership-only equality (ignores s/e — the fill is animated separately
   // against the live clock). Zero-allocation: this runs on a 1s timer, so the
   // old join-string approach rebuilt two big strings every second forever.
@@ -1565,9 +1565,9 @@ function bootMap(initial) {
   }
 
   // The rAF loop only renders the fill; it never changes which attacks are
-  // active. A 1s interval handles membership: pick up attacks that just
-  // entered their window (and (re)start the loop for them) and drop ones that
-  // passed `e` — without waiting up to 30s for the next war.json poll.
+  // active. A 1s interval picks up attacks that just reached their start time,
+  // (re)starts the animation loop for them, and lets the loop settle completed
+  // fills without waiting up to 30s for the next war.json poll.
   setInterval(() => {
     if (refreshActiveAttacks()) {
       cachedAttacksLayer = null;
