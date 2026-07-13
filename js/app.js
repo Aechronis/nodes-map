@@ -1468,8 +1468,8 @@ function bootMap(initial) {
         }
       }
       if (!dirty) {
-        // No file changed, but an attack may have entered/left its [s, e]
-        // window since the last tick — re-evaluate cheaply rather than skip.
+        // No file changed, but an attack may have reached its start time since
+        // the last tick — re-evaluate cheaply rather than skip.
         if (refreshActiveAttacks()) redraw();
         return;
       }
