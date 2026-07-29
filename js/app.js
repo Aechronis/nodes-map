@@ -25,6 +25,9 @@ const TERRITORY_OPACITY = 0.1;
 const TOWN_HL_OPACITY = 0.2;
 const TERRITORY_HL_OPACITY = 0.3;
 const CHUNK_HL_OPACITY = 1;
+// Configured territories without a town use the same neutral gray as other
+// missing-color fallbacks, so they remain visible without implying ownership.
+const UNCLAIMED_TERRITORY_COLOR = [120, 120, 120];
 // Inset the building image so it covers ~70% of the chunk, centered.
 const BUILDING_IMAGE_SIZE = BLOCKS_PER_CHUNK * 0.7;
 // Mirror of CSS --mono so TextLayer glyphs match the rest of the UI.
@@ -45,11 +48,11 @@ const NATIVE_VIEW_ZOOM = 0;
 const PAN_BOUNDS = [-26880, -12289, 26880, 12290];
 
 // World-space box the webp tile pyramid actually covers. Tiles exist wherever
-// the base map was rendered (the whole terrain) — a superset of the owned-chunk
+// the base map was rendered (the whole terrain) — a superset of the territory
 // hull and at least as large as PAN_BOUNDS. The TileLayer extent and the
-// fallback canvas must be bounded by *this*, not by the owned-chunk bbox:
-// deriving them from owned chunks clipped the peripheral map tiles (terrain
-// with no town ownership) at the edges of the world. Snap PAN_BOUNDS outward
+// fallback canvas must be bounded by *this*, not by the territory bbox:
+// deriving them from indexed chunks clipped peripheral terrain at the edges
+// of the world. Snap PAN_BOUNDS outward
 // to whole TILE_BLOCK_EXTENT tiles so partial edge tiles load in full.
 const TILE_WORLD_BOUNDS = [
   Math.floor(PAN_BOUNDS[0] / TILE_BLOCK_EXTENT) * TILE_BLOCK_EXTENT,
@@ -130,8 +133,8 @@ function escapeHtml(s) {
 // --- Data indexing -------------------------------------------------------
 function buildIndex({ towns, world, war }) {
   // Any of these may be null when the corresponding node file is absent;
-  // default to empty objects so the index just comes out empty (no owned
-  // chunks) instead of throwing on `.nations` / `.territories` access.
+  // default to empty objects so the index contains whatever data is available
+  // instead of throwing on `.nations` / `.territories` access.
   towns = towns || {};
   world = world || {};
   const townNation = new Map();
@@ -143,7 +146,8 @@ function buildIndex({ towns, world, war }) {
   for (const [name, town] of Object.entries(towns.towns || {})) {
     const nationName = townNation.get(name) || null;
     const nation = nationName ? towns.nations[nationName] : null;
-    const color = pickColor([nation && nation.color, town.color], [120, 120, 120]);
+    const color = pickColor(
+      [nation && nation.color, town.color], UNCLAIMED_TERRITORY_COLOR);
     townStyle.set(name, {
       name,
       nation: nationName,
@@ -180,36 +184,58 @@ function buildIndex({ towns, world, war }) {
   const owner = new Map();
   const homes = [];
   let minCx = Infinity, maxCx = -Infinity, minCz = Infinity, maxCz = -Infinity;
+
+  const addTerritory = (territoryId, territory, townName, style) => {
+    territoryStyle.set(territoryId, style);
+    const arr = territory.chunks || [];
+    for (let i = 0; i < arr.length; i += 2) {
+      const cx = arr[i];
+      const cz = arr[i + 1];
+      const ownerKey = packCoord(cx, cz);
+      if (owner.has(ownerKey)) continue;
+      owner.set(ownerKey, { townName, territoryId, style, cx, cz });
+      if (cx < minCx) minCx = cx;
+      if (cx > maxCx) maxCx = cx;
+      if (cz < minCz) minCz = cz;
+      if (cz > maxCz) maxCz = cz;
+    }
+    if (territory.core) {
+      const hx = Math.floor(territory.core[0] / BLOCKS_PER_CHUNK);
+      const hz = Math.floor(territory.core[1] / BLOCKS_PER_CHUNK);
+      homes.push({ cx: hx, cz: hz, color: style.color });
+    }
+  };
+
   for (const [name, town] of Object.entries(towns.towns || {})) {
     const tStyle = townStyle.get(name);
-    for (const tid of town.territories || []) {
+    for (const rawTid of town.territories || []) {
+      const tid = +rawTid;
       const occ = occupiedByTid.get(tid);
       const style = occ ? {
         ...tStyle,
         color: occ.color,
       } : tStyle;
-      territoryStyle.set(tid, style);
 
       const territory = world.territories && world.territories[tid];
       if (!territory) continue;
-      const arr = territory.chunks;
-      for (let i = 0; i < arr.length; i += 2) {
-        const cx = arr[i];
-        const cz = arr[i + 1];
-        const ownerKey = packCoord(cx, cz);
-        if (owner.has(ownerKey)) continue;
-        owner.set(ownerKey, { townName: name, territoryId: tid, style, cx, cz });
-        if (cx < minCx) minCx = cx;
-        if (cx > maxCx) maxCx = cx;
-        if (cz < minCz) minCz = cz;
-        if (cz > maxCz) maxCz = cz;
-      }
-      if (territory.core) {
-        const hx = Math.floor(territory.core[0] / BLOCKS_PER_CHUNK);
-        const hz = Math.floor(territory.core[1] / BLOCKS_PER_CHUNK);
-        homes.push({ cx: hx, cz: hz, color: style.color });
-      }
+      addTerritory(tid, territory, name, style);
     }
+  }
+
+  // Town data describes ownership, but world data describes every configured
+  // territory. Index anything no town referenced as unclaimed so it still
+  // receives a fill, outline, chunk grid, core marker, and click target.
+  const unclaimedStyle = {
+    name: null,
+    nation: null,
+    color: UNCLAIMED_TERRITORY_COLOR,
+  };
+  for (const [rawTid, territory] of Object.entries(world.territories || {})) {
+    const tid = +rawTid;
+    if (territoryStyle.has(tid)) continue;
+    const occ = occupiedByTid.get(tid);
+    const style = occ ? { ...unclaimedStyle, color: occ.color } : unclaimedStyle;
+    addTerritory(tid, territory, null, style);
   }
 
   return { townStyle, territoryStyle, owner, homes, minCx, maxCx, minCz, maxCz };
@@ -222,7 +248,7 @@ function buildIndex({ towns, world, war }) {
 // `skipKeys` (packed-coord Set) are chunks left transparent so the attack
 // fill blends straight onto the map imagery — no old-owner colour tinting it.
 function buildWorldImage(index, skipKeys) {
-  // No owned chunks (e.g. towns/world data absent) → minCx/minCz are still
+  // No territory chunks (e.g. world data absent) → minCx/minCz are still
   // Infinity, which would size the canvas from garbage bounds. Nothing to
   // raster, so return null; territoryRasterLayer() skips a null image.
   if (!index.owner.size) return null;
@@ -243,8 +269,8 @@ function buildWorldImage(index, skipKeys) {
 }
 
 // Each chunk → up to 4 path segments along edges that border a different
-// territory (or unowned space). Coords are in blocks. 2 px wide so they read
-// over the 1 px chunk grid.
+// territory (or space outside any configured territory). Coords are in
+// blocks. 2 px wide so they read over the 1 px chunk grid.
 function buildOutlineSegments(index) {
   const segments = [];
   const dirs = [
@@ -260,7 +286,7 @@ function buildOutlineSegments(index) {
     for (const d of dirs) {
       const n = index.owner.get(packCoord(cx + d.dx, cz + d.dz));
       // Only the chunk with smaller territoryId emits the shared edge — the
-      // neighbour will skip it. Unowned neighbours always emit.
+      // neighbour will skip it. Missing neighbours always emit.
       if (n && territoryId >= n.territoryId) continue;
       segments.push({
         path: [
@@ -418,8 +444,8 @@ async function fetchOptionalJsonWithMeta(url) {
 
 Promise.all([
   // All node files are optional: when none are present the base map (tiles)
-  // still renders, just with no town/territory overlay. A missing towns.json
-  // or world.json yields an empty index rather than blocking the map load.
+  // still renders. Without world.json there is no territory overlay; without
+  // towns.json every configured territory is shown as unclaimed.
   fetchOptionalJsonWithMeta('nodes/towns.json'),
   fetchOptionalJsonWithMeta('nodes/world.json'),
   // war.json may be absent when there's no active war; treat any failure as
@@ -451,14 +477,14 @@ function bootMap(initial) {
   let outlineSegments;
   let attackChunks;
   let attackChunkKeys = new Set();  // packed coords of currently-shown attacks
-  let ownedChunks;
+  let territoryChunks;
   // World-space bbox in block coords. Recomputed each rebuild from the
   // current index — territoryRasterLayer reads these inline so its bounds
   // stay aligned with the (possibly-resized) worldImage.
   let minBlockX, minBlockZ, maxBlockX, maxBlockZ;
 
-  // Spatial bucket index. The world has ~2.4M owned chunks (one wilderness
-  // territory alone owns 1.5M); rendering them as a single PolygonLayer would
+  // Spatial bucket index. The world has ~2.4M territory chunks (one wilderness
+  // territory alone spans 1.5M); rendering them as a single PolygonLayer would
   // exhaust GPU memory. Bucket by 32×32-chunk cells so per-frame culling can
   // gather just the cells that overlap the viewport, and pass the resulting
   // (typically <10k) chunks to the grid/outline layers.
@@ -476,14 +502,14 @@ function bootMap(initial) {
     attackChunkKeys = new Set(attackChunks.map((a) => packCoord(a.cx, a.cz)));
     worldImage = buildWorldImage(index, attackChunkKeys);
     outlineSegments = buildOutlineSegments(index);
-    ownedChunks = [...index.owner.values()];
+    territoryChunks = [...index.owner.values()];
 
     minBlockX = index.minCx * BLOCKS_PER_CHUNK;
     minBlockZ = index.minCz * BLOCKS_PER_CHUNK;
     maxBlockX = (index.maxCx + 1) * BLOCKS_PER_CHUNK;
     maxBlockZ = (index.maxCz + 1) * BLOCKS_PER_CHUNK;
 
-    ownerCells = bucketByCell(ownedChunks, SPATIAL_CELL_CHUNKS);
+    ownerCells = bucketByCell(territoryChunks, SPATIAL_CELL_CHUNKS);
     segmentCells = bucketByCell(outlineSegments, SPATIAL_CELL_CHUNKS);
 
     // Resident UUID → name; callers fall back to the raw UUID when absent.
@@ -536,7 +562,7 @@ function bootMap(initial) {
 
   async function buildFallback() {
     // Cover the whole tile pyramid, same as the TileLayer extent — the
-    // owned-chunk bbox would leave the world's edge rows/cols black.
+    // territory bbox would leave the world's edge rows/cols black.
     const [tbMinX, tbMinZ, tbMaxX, tbMaxZ] = TILE_WORLD_BOUNDS;
     const minTX = Math.floor(tbMinX / TILE_BLOCK_EXTENT);
     const maxTX = Math.ceil(tbMaxX / TILE_BLOCK_EXTENT) - 1;
@@ -586,7 +612,8 @@ function bootMap(initial) {
   // --- Mutable selection / hover state -----------------------------------
   let viewZoom = NATIVE_VIEW_ZOOM;
   let viewTarget = [0, 0];
-  let selectedHit = null;        // owner entry: { townName, territoryId, style, cx, cz }
+  // townName is null for a configured but unclaimed territory.
+  let selectedHit = null;        // { townName, territoryId, style, cx, cz }
   let selectedChunk = null;      // [cx, cz]
   let selectedBuilding = null;   // entry from buildingsByChunk
   let hoveredBuilding = null;    // entry from buildingsByChunk
@@ -637,6 +664,11 @@ function bootMap(initial) {
   const OUTLINE_MIN_ZOOM = -2;
 
   function renderNationPanel(hit) {
+    if (hit.townName == null) {
+      nationPanel.classList.remove('empty');
+      nationPanel.innerHTML = '<h2>No town</h2><div class="subtitle">This territory is unclaimed.</div>';
+      return;
+    }
     const style = hit.style;
     if (!style.nation) {
       nationPanel.classList.remove('empty');
@@ -667,33 +699,39 @@ function bootMap(initial) {
   }
 
   function renderTerritoryPanel(hit) {
-    const town = data.towns.towns[hit.townName];
-    const style = hit.style;
+    const town = hit.townName == null
+      ? null
+      : data.towns?.towns?.[hit.townName];
     const territory = data.world.territories[hit.territoryId];
     const tname = territory && territory.name ? territory.name : `#${hit.territoryId}`;
-    const leaderName = (town.leader && residentNames.get(town.leader)) || '—';
-    const residents = (town.residents || [])
+    const leaderName = (town?.leader && residentNames.get(town.leader)) || '—';
+    const residents = (town?.residents || [])
       .map((uuid) => residentNames.get(uuid) || uuid);
     const nodes = (territory && territory.nodes) || [];
     const core = territory && territory.core;
     const sizeChunks = territory ? territory.size : 0;
-
-    territoryPanel.classList.remove('empty');
-    territoryPanel.innerHTML = `
+    const townSummary = town ? `
       <h2>${escapeHtml(hit.townName)}</h2>
       <dl>
         <dt>Leader</dt><dd>${escapeHtml(leaderName)}</dd>
         <dt>Residents</dt><dd>${residents.length}</dd>
         <dt>Territories</dt><dd>${(town.territories || []).length}</dd>
       </dl>
+    ` : `
+      <h2>Unclaimed</h2>
+      <div class="subtitle">No town occupies this territory.</div>
+    `;
+
+    territoryPanel.classList.remove('empty');
+    territoryPanel.innerHTML = `
+      ${townSummary}
       <h3>Territory: ${escapeHtml(tname)}</h3>
       <dl>
         <dt>Size</dt><dd>${sizeChunks} chunks</dd>
         ${core ? `<dt>Core</dt><dd>${core[0]}, ${core[1]}</dd>` : ''}
         <dt>Nodes</dt><dd>${nodes.length ? nodes.map(escapeHtml).join(', ') : '—'}</dd>
       </dl>
-      <h3>Residents</h3>
-      ${listHtml(residents)}
+      ${town ? `<h3>Residents</h3>${listHtml(residents)}` : ''}
     `;
   }
 
@@ -744,7 +782,7 @@ function bootMap(initial) {
   // Rasterise an arbitrary set of chunks into a BitmapLayer at one pixel per
   // chunk, sized to the chunks' bounding box. Mirrors the original leaflet
   // chunksToOverlay — keeps highlight memory bounded by the selection's bbox
-  // even when the selection is huge (e.g. the Impassable wilderness town).
+  // even when the selection is huge (e.g. the large wilderness territory).
   // `chunks` is a flat [cx0, cz0, cx1, cz1, ...] array.
   function chunksToBitmapLayer(id, chunks, color, opacity, skipKeys) {
     if (!chunks.length) return null;
@@ -789,17 +827,21 @@ function bootMap(initial) {
     cachedTerritoryHL = null;
     cachedChunkHL = null;
     if (selectedHit) {
-      const town = data.towns.towns[selectedHit.townName];
-      const townChunks = [];
-      for (const tid of town.territories || []) {
-        const t = data.world.territories[tid];
-        if (!t) continue;
-        const arr = t.chunks;
-        for (let i = 0; i < arr.length; i++) townChunks.push(arr[i]);
+      const town = selectedHit.townName == null
+        ? null
+        : data.towns?.towns?.[selectedHit.townName];
+      if (town) {
+        const townChunks = [];
+        for (const tid of town.territories || []) {
+          const t = data.world.territories[tid];
+          if (!t) continue;
+          const arr = t.chunks;
+          for (let i = 0; i < arr.length; i++) townChunks.push(arr[i]);
+        }
+        cachedTownHL = chunksToBitmapLayer(
+          'town-highlight', townChunks, selectedHit.style.color, TOWN_HL_OPACITY,
+          attackChunkKeys);
       }
-      cachedTownHL = chunksToBitmapLayer(
-        'town-highlight', townChunks, selectedHit.style.color, TOWN_HL_OPACITY,
-        attackChunkKeys);
       const territory = data.world.territories[selectedHit.territoryId];
       if (territory) {
         cachedTerritoryHL = chunksToBitmapLayer(
@@ -905,7 +947,7 @@ function bootMap(initial) {
       minZoom: 0,
       maxZoom: NATIVE_LOD_RANGE,
       // Bound tile requests by the tile pyramid's true coverage, not the
-      // owned-chunk bbox (which would clip edge terrain that has no town).
+      // territory bbox (which would clip terrain beyond configured territory).
       extent: TILE_WORLD_BOUNDS,
       // Hold extra rings of off-screen tiles so backtracking pans don't
       // re-fetch.
@@ -995,7 +1037,9 @@ function bootMap(initial) {
       const o = index.owner.get(packCoord(cx, cz));
       if (o) {
         if (o.territoryId === selectedHit.territoryId) return TERRITORY_HL_OPACITY;
-        if (o.townName === selectedHit.townName) return TOWN_HL_OPACITY;
+        if (selectedHit.townName != null && o.townName === selectedHit.townName) {
+          return TOWN_HL_OPACITY;
+        }
       }
     }
     return TERRITORY_OPACITY;
@@ -1047,7 +1091,7 @@ function bootMap(initial) {
     return cachedAttacksLayer;
   }
 
-  // Per-owned-chunk stroked square in the chunk's territory colour. Only
+  // Per-territory-chunk stroked square in the chunk's territory colour. Only
   // visible at native zoom and above where chunks are at least 16 px wide;
   // viewport-culled so we never upload more than a few thousand chunks.
   //
