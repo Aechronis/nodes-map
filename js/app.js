@@ -30,6 +30,7 @@ const CHUNK_HL_OPACITY = 1;
 const UNCLAIMED_TERRITORY_COLOR = [120, 120, 120];
 // Inset the building image so it covers ~70% of the chunk, centered.
 const BUILDING_IMAGE_SIZE = BLOCKS_PER_CHUNK * 0.7;
+const PORT_RANGE_BY_TIER = [2500, 5000, 10000];
 // Mirror of CSS --mono so TextLayer glyphs match the rest of the UI.
 const MONO_FONT = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 
@@ -1180,8 +1181,11 @@ function bootMap(initial) {
       cachedPortRingLayer = null;
       return null;
     }
-    // Port travel range: 1000 * 2^(tier-1) blocks.
-    const radius = 1000 * Math.pow(2, selectedBuilding.data.tier - 1);
+    const radius = PORT_RANGE_BY_TIER[selectedBuilding.data.tier - 1];
+    if (radius == null) {
+      cachedPortRingLayer = null;
+      return null;
+    }
     cachedPortRingLayer = new ScatterplotLayer({
       id: 'port-ring',
       data: [{ position: selectedBuilding.center }],
