@@ -168,7 +168,12 @@ function buildIndex({ towns, world, war }) {
       }
     }
     for (const [occupier, value] of Object.entries(war.occupied)) {
-      const pairs = Array.isArray(value[0]) ? value : [value];
+      const pairs = Array.isArray(value[0])
+        ? value
+        : Array.from(
+          { length: Math.floor(value.length / 2) },
+          (_, i) => [value[i * 2], value[i * 2 + 1]],
+        );
       const occStyle = townStyle.get(occupier);
       const nation = towns.nations && towns.nations[occupier];
       const color = pickColor(
